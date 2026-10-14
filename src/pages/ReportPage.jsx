@@ -106,6 +106,20 @@ export default function ReportPage() {
     }
   };
 
+  const handleLoadSample = async () => {
+    try {
+      setIsCompressing(true);
+      const res = await fetch('/sample-flood.jpg');
+      const blob = await res.blob();
+      const file = new File([blob], 'sample-flood.jpg', { type: 'image/jpeg' });
+      await handleImageSelect(file);
+    } catch (err) {
+      console.error('Failed to load sample image:', err);
+    } finally {
+      setIsCompressing(false);
+    }
+  };
+
   const handleAnalyze = async () => {
     if (!compressedData?.base64 && !previewUrl) return;
 
