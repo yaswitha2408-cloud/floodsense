@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="wave" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#2dd4bf" />
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="40" fill="url(#grad)" />
+  <!-- Water radar rings -->
+  <circle cx="96" cy="88" r="56" fill="none" stroke="#38bdf8" stroke-width="3" stroke-opacity="0.3" stroke-dasharray="6 4" />
+  <circle cx="96" cy="88" r="38" fill="none" stroke="#38bdf8" stroke-width="3.5" stroke-opacity="0.5" />
+  <circle cx="96" cy="88" r="20" fill="none" stroke="#2dd4bf" stroke-width="4" stroke-opacity="0.8" />
+  <circle cx="96" cy="88" r="7" fill="#38bdf8" />
+  <!-- Water Wave Base -->
+  <path d="M 28 140 C 50 126, 74 154, 96 140 C 118 126, 142 154, 164 140 L 164 164 C 164 172, 156 178, 148 178 L 44 178 C 35 178, 28 172, 28 164 Z" fill="url(#wave)" />
+</svg>
