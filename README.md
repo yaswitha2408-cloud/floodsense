@@ -1,4 +1,9 @@
-FloodSense: Street-Level Flood Early Warning
+## Problem and Impact
+FloodSense supports public safety, emergency response, environmental resilience, and citizen engagement. Heavy rain floods streets within minutes, but warnings cover whole cities. FloodSense gives street-level, AI-verified warnings so people avoid unsafe roads and city teams respond faster.
+
+## How AI Is Used
+- Gemini vision: verifies flood photos, estimates water depth, and judges passability for pedestrians, bikes, and cars.
+- Gemini text: turns risk scores into plain-language warnings.FloodSense: Street-Level Flood Early Warning
 Flood warnings tell you a city will flood. FloodSense tells you which street to avoid, right now.
 The Problem
 Heavy rain can flood streets within minutes, but official warnings usually cover a whole city or region. People get stranded, injured, or lose vehicles because they cannot tell which specific road or underpass is unsafe.
