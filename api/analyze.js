@@ -1,7 +1,130 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-const SYSTEM_PROMPT = `You are a flood assessment assistant. Look at this street photo. Decide if it shows real street flooding. Estimate water depth in cm using reference objects (car tyre ~65cm tall, curb ~15cm, knee ~50cm, ankle ~10cm). Say which reference you used. Say whether pedestrians, bikes and cars could pass. If the image is not a real street scene, looks edited, or is unclear, set is_flood to false and lower the confidence. Return JSON only.`;
+export const SYSTEM_PROMPT = `You are a flood assessment assistant. Look at this street photo. Decide if it shows real street flooding. Estimate water depth in cm using reference objects (car tyre ~65cm tall, curb ~15cm, knee ~50cm, ankle ~10cm). Say which reference you used. Say whether pedestrians, bikes and cars could pass. If the image is not a real street scene, looks edited, or is unclear, set is_flood to false and lower the confidence. Return JSON only.`;
+
+export const MAX_IMAGE_SIZE_BYTES = 4 * 1024 * 1024; // 4 MB per SPEC.md line 52
+
+export const FALLBACK_ANALYSIS_FAILED = Object.freeze({
+  is_flood: false,
+  confidence: 0,
+  error: 'analysis_failed',
+});
+
+/**
+ * Checks if a base64 encoded image exceeds the size limit (4 MB)
+ * @param {string} imageBase64
+ * @param {number} [maxBytes]
+ * @returns {{ valid: boolean, estimatedBytes: number, error?: string }}
+ */
+export function checkImageSize(imageBase64, maxBytes = MAX_IMAGE_SIZE_BYTES) {
+  if (!imageBase64 || typeof imageBase64 !== 'string') {
+    return { valid: false, estimatedBytes: 0, error: 'Missing image data' };
+  }
+  const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
+  const estimatedBytes = Math.round((cleanBase64.length * 3) / 4);
+
+  if (estimatedBytes > maxBytes) {
+    return {
+      valid: false,
+      estimatedBytes,
+      error: 'Image exceeds 4 MB limit',
+    };
+  }
+
+  return { valid: true, estimatedBytes };
+}
+
+/**
+ * Validates and normalizes Gemini vision output against SPEC.md schema
+ * Schema:
+ * {
+ *   "is_flood": boolean,
+ *   "depth_cm": integer,
+ *   "reference_object": string,
+ *   "passable_for": { "pedestrian": boolean, "bike": boolean, "car": boolean },
+ *   "confidence": number
+ * }
+ * 
+ * On any failure, returns { is_flood:false, confidence:0, error:"analysis_failed" }
+ * @param {string|object} rawOutput
+ * @returns {object}
+ */
+export function validateAnalyzeOutput(rawOutput) {
+  if (!rawOutput) {
+    return { ...FALLBACK_ANALYSIS_FAILED };
+  }
+
+  let parsed = rawOutput;
+
+  if (typeof rawOutput === 'string') {
+    const trimmed = rawOutput.trim();
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      // Attempt to extract JSON from markdown code block or braces
+      const match = trimmed.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          parsed = JSON.parse(match[0]);
+        } catch {
+          return { ...FALLBACK_ANALYSIS_FAILED };
+        }
+      } else {
+        return { ...FALLBACK_ANALYSIS_FAILED };
+      }
+    }
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { ...FALLBACK_ANALYSIS_FAILED };
+  }
+
+  // Must have is_flood boolean (or boolean coercible)
+  if (typeof parsed.is_flood !== 'boolean' && parsed.is_flood !== 'true' && parsed.is_flood !== 'false') {
+    return { ...FALLBACK_ANALYSIS_FAILED };
+  }
+
+  const isFlood = parsed.is_flood === true || parsed.is_flood === 'true';
+
+  // depth_cm must be a valid non-negative number
+  let depthCm = 0;
+  if (parsed.depth_cm !== undefined && parsed.depth_cm !== null) {
+    const num = Number(parsed.depth_cm);
+    if (!isNaN(num) && num >= 0) {
+      depthCm = Math.round(num);
+    }
+  }
+
+  // reference_object
+  const referenceObject = typeof parsed.reference_object === 'string' && parsed.reference_object.trim().length > 0
+    ? parsed.reference_object.trim()
+    : 'None detected';
+
+  // passable_for must be an object with pedestrian, bike, car
+  const passableForRaw = parsed.passable_for;
+  const passableFor = {
+    pedestrian: Boolean(passableForRaw?.pedestrian),
+    bike: Boolean(passableForRaw?.bike),
+    car: Boolean(passableForRaw?.car),
+  };
+
+  // confidence between 0 and 1
+  let confidence = 0;
+  if (typeof parsed.confidence === 'number' && !isNaN(parsed.confidence)) {
+    confidence = Math.min(Math.max(parsed.confidence, 0), 1);
+  } else if (isFlood) {
+    confidence = 0.75;
+  }
+
+  return {
+    is_flood: isFlood,
+    depth_cm: depthCm,
+    reference_object: referenceObject,
+    passable_for: passableFor,
+    confidence: Number(confidence.toFixed(2)),
+  };
+}
 
 export default async function handler(req, res) {
   // CORS support
@@ -21,8 +144,7 @@ export default async function handler(req, res) {
   if (!apiKey) {
     console.error('Server error: GEMINI_API_KEY is not configured in environment');
     return res.status(500).json({
-      is_flood: false,
-      confidence: 0,
+      ...FALLBACK_ANALYSIS_FAILED,
       error: 'GEMINI_API_KEY is not configured on server',
     });
   }
@@ -32,25 +154,21 @@ export default async function handler(req, res) {
 
     if (!imageBase64) {
       return res.status(400).json({
-        is_flood: false,
-        confidence: 0,
+        ...FALLBACK_ANALYSIS_FAILED,
         error: 'Missing imageBase64 in request body',
       });
     }
 
-    // Reject images over 4 MB per SPEC.md line 52
-    // Base64 size estimation: (length * 3) / 4 bytes
-    const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
-    const estimatedSizeBytes = (cleanBase64.length * 3) / 4;
-    const MAX_SIZE_BYTES = 4 * 1024 * 1024; // 4 MB
-
-    if (estimatedSizeBytes > MAX_SIZE_BYTES) {
+    // Check size limit (4 MB)
+    const sizeCheck = checkImageSize(imageBase64, MAX_IMAGE_SIZE_BYTES);
+    if (!sizeCheck.valid) {
       return res.status(413).json({
-        is_flood: false,
-        confidence: 0,
-        error: 'Image exceeds 4 MB limit',
+        ...FALLBACK_ANALYSIS_FAILED,
+        error: sizeCheck.error,
       });
     }
+
+    const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
 
     // Determine mimeType
     let detectedMimeType = mimeType || 'image/jpeg';
@@ -61,7 +179,6 @@ export default async function handler(req, res) {
     // Model selection with fallback support
     const modelsToTry = ['gemini-3.8-flash', 'gemini-2.5-flash'];
     let geminiResponse = null;
-    let lastError = null;
 
     for (const model of modelsToTry) {
       try {
@@ -99,92 +216,22 @@ export default async function handler(req, res) {
           }
         } else {
           const errText = await response.text();
-          // Never log or print the API key
           const safeErr = errText.replace(new RegExp(apiKey, 'g'), '[REDACTED_KEY]');
           console.warn(`Model ${model} returned HTTP ${response.status}:`, safeErr);
-          lastError = safeErr;
         }
       } catch (callErr) {
         console.warn(`Call to ${model} threw error:`, callErr.message);
-        lastError = callErr.message;
       }
     }
 
     if (!geminiResponse) {
-      console.error('All Gemini model calls failed or returned empty text');
-      return res.status(200).json({
-        is_flood: false,
-        confidence: 0,
-        error: 'analysis_failed',
-      });
+      return res.status(200).json({ ...FALLBACK_ANALYSIS_FAILED });
     }
 
-    // Parse structured JSON response
-    let parsed;
-    try {
-      parsed = JSON.parse(geminiResponse.trim());
-    } catch (parseErr) {
-      console.warn('Failed to parse Gemini output as JSON:', parseErr.message);
-      // Attempt to extract JSON substring if wrapped in markdown
-      const match = geminiResponse.match(/\{[\s\S]*\}/);
-      if (match) {
-        try {
-          parsed = JSON.parse(match[0]);
-        } catch {
-          return res.status(200).json({
-            is_flood: false,
-            confidence: 0,
-            error: 'analysis_failed',
-          });
-        }
-      } else {
-        return res.status(200).json({
-          is_flood: false,
-          confidence: 0,
-          error: 'analysis_failed',
-        });
-      }
-    }
-
-    // Validate required schema per SPEC.md:
-    // {
-    //   "is_flood": boolean,
-    //   "depth_cm": integer,
-    //   "reference_object": string,
-    //   "passable_for": { "pedestrian": boolean, "bike": boolean, "car": boolean },
-    //   "confidence": number
-    // }
-    if (typeof parsed !== 'object' || parsed === null) {
-      return res.status(200).json({
-        is_flood: false,
-        confidence: 0,
-        error: 'analysis_failed',
-      });
-    }
-
-    const validatedResult = {
-      is_flood: Boolean(parsed.is_flood),
-      depth_cm: Number.isInteger(parsed.depth_cm)
-        ? parsed.depth_cm
-        : Math.round(Number(parsed.depth_cm) || 0),
-      reference_object: typeof parsed.reference_object === 'string' ? parsed.reference_object : 'None detected',
-      passable_for: {
-        pedestrian: Boolean(parsed.passable_for?.pedestrian),
-        bike: Boolean(parsed.passable_for?.bike),
-        car: Boolean(parsed.passable_for?.car),
-      },
-      confidence: typeof parsed.confidence === 'number'
-        ? Math.min(Math.max(parsed.confidence, 0), 1)
-        : (parsed.is_flood ? 0.75 : 0.2),
-    };
-
+    const validatedResult = validateAnalyzeOutput(geminiResponse);
     return res.status(200).json(validatedResult);
   } catch (err) {
     console.error('Unhandled error in /api/analyze:', err.message);
-    return res.status(200).json({
-      is_flood: false,
-      confidence: 0,
-      error: 'analysis_failed',
-    });
+    return res.status(200).json({ ...FALLBACK_ANALYSIS_FAILED });
   }
 }
